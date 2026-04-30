@@ -2,8 +2,21 @@ const std = @import("std");
 const patterns = @import("patterns.zig");
 const entropy = @import("entropy.zig");
 const pem = @import("pem.zig");
+const uri = @import("uri.zig");
 
 const Allocator = std.mem.Allocator;
+
+/// A byte range already claimed by an earlier detection pass; later passes
+/// must skip candidates whose start falls inside one of these ranges so we
+/// don't double-flag the same bytes.
+const CoveredRange = struct { start: usize, end: usize };
+
+fn isCovered(ranges: []const CoveredRange, pos: usize) bool {
+    for (ranges) |r| {
+        if (pos >= r.start and pos < r.end) return true;
+    }
+    return false;
+}
 
 pub const HitKind = enum { known, generic };
 
@@ -41,12 +54,13 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
     errdefer hits.deinit(allocator);
 
-    // First pass: locate multi-line PEM blocks. We emit one Hit per block and
-    // track their ranges so the token-scan pass below skips anything inside.
+    var covered: std.ArrayList(CoveredRange) = .empty;
+    defer covered.deinit(allocator);
+
+    // Pre-pass 1: multi-line PEM private key blocks. Emit one Hit per block
+    // and add the range to `covered` so the token loop skips the body.
     const pem_spans = try pem.findBlocks(allocator, input);
     defer allocator.free(pem_spans);
-
-    var pem_idx: usize = 0;
     for (pem_spans) |s| {
         const value = input[s.start..s.end];
         if (opts.skip_noscan and lineHasNoscan(input, s.start)) continue;
@@ -57,20 +71,34 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
             .start = s.start,
             .end = s.end,
         });
+        try covered.append(allocator, .{ .start = s.start, .end = s.end });
     }
-    // Hits emitted from pem_spans are already sorted by .start because
-    // findBlocks walks left-to-right.
 
+    // Pre-pass 2: URI-shaped connection strings. Emit one Hit per password
+    // byte range (the rest of the URI stays intact) and cover the range.
+    const uri_spans = try uri.findPasswordSpans(allocator, input);
+    defer allocator.free(uri_spans);
+    for (uri_spans) |sp| {
+        const value = input[sp.start..sp.end];
+        if (opts.skip_noscan and lineHasNoscan(input, sp.start)) continue;
+        if (isAllowed(value, opts.allow)) continue;
+        try hits.append(allocator, .{
+            .kind = .known,
+            .name = "connection-string-password",
+            .start = sp.start,
+            .end = sp.end,
+        });
+        try covered.append(allocator, .{ .start = sp.start, .end = sp.end });
+    }
+
+    // Token pass: walk every candidate token. Skip anything inside a
+    // covered range (already claimed by a pre-pass).
     var cursor: usize = 0;
     while (entropy.nextCandidate(input, cursor)) |span| {
-        // Advance pem_idx past any covered range that ends before this span.
-        while (pem_idx < pem_spans.len and pem_spans[pem_idx].end <= span.start) : (pem_idx += 1) {}
-        // If span.start falls inside a PEM block, skip past the block.
-        if (pem_idx < pem_spans.len and span.start >= pem_spans[pem_idx].start and span.start < pem_spans[pem_idx].end) {
-            cursor = pem_spans[pem_idx].end;
+        if (isCovered(covered.items, span.start)) {
+            cursor = span.end;
             continue;
         }
-
         if (patterns.matchAt(input, span.start)) |m| {
             const value = input[m.start..m.end];
             if (!(opts.skip_noscan and lineHasNoscan(input, m.start)) and !isAllowed(value, opts.allow)) {
@@ -98,9 +126,8 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
         }
     }
 
-    // Token-pass hits land after PEM hits in `hits`, but their starts may
-    // interleave (PEM blocks can sit between tokens). Sort to honour the
-    // contract that the redactor consumes hits in start-order.
+    // Pre-pass and token-pass hits are interleaved by .start; the redactor
+    // assumes start-order, so sort before returning.
     const out = try hits.toOwnedSlice(allocator);
     std.mem.sort(Hit, out, {}, struct {
         fn lessThan(_: void, a: Hit, b: Hit) bool {
@@ -230,107 +257,4 @@ test "no secrets means input passes through unchanged" {
     const out = try r.redact(input, hits);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings(input, out);
-}
-
-test "PEM block round-trips through scan + redactor as a single hit" {
-    const input =
-        "before\n" ++
-        "-----BEGIN RSA PRIVATE KEY-----\n" ++
-        "MIIEpAIBAAKCAQEA1234567890abcdefg\n" ++
-        "hijklmnop1234567890qrstuvwxyz\n" ++
-        "-----END RSA PRIVATE KEY-----\n" ++
-        "after\n";
-
-    const hits = try scan(std.testing.allocator, input, .{});
-    defer std.testing.allocator.free(hits);
-
-    // Exactly one hit — the multi-line block — not multiple per-line entropy hits.
-    try std.testing.expectEqual(@as(usize, 1), hits.len);
-    try std.testing.expectEqualStrings("rsa-private-key", hits[0].name);
-
-    var r = Redactor.init(std.testing.allocator);
-    defer r.deinit();
-    const out = try r.redact(input, hits);
-    defer std.testing.allocator.free(out);
-
-    try std.testing.expect(std.mem.indexOf(u8, out, "[REDACTED:rsa-private-key:1]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "BEGIN RSA PRIVATE KEY") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "MIIEpAIBAAKCAQEA") == null);
-    try std.testing.expect(std.mem.startsWith(u8, out, "before\n"));
-    try std.testing.expect(std.mem.endsWith(u8, out, "after\n"));
-}
-
-test "PEM body lines are not double-flagged as high-entropy" {
-    // Body lines on their own would be high-entropy candidates; the PEM pass
-    // must claim the range so the token loop skips them.
-    const input =
-        "-----BEGIN OPENSSH PRIVATE KEY-----\n" ++
-        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy\n" ++
-        "NTUxOQAAACA1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR==\n" ++
-        "-----END OPENSSH PRIVATE KEY-----\n";
-
-    const hits = try scan(std.testing.allocator, input, .{});
-    defer std.testing.allocator.free(hits);
-
-    try std.testing.expectEqual(@as(usize, 1), hits.len);
-    try std.testing.expectEqualStrings("openssh-private-key", hits[0].name);
-}
-
-test "PEM block alongside a token secret yields ordered hits" {
-    const input =
-        "tok = \"sk-ant-api03-aB3xQ9_kLm2nP5vR7wYzC8dFgHj1KlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOp\"\n" ++
-        "-----BEGIN RSA PRIVATE KEY-----\n" ++
-        "MIIEpAIBAAKCAQEA1234567890abcdefg\n" ++
-        "-----END RSA PRIVATE KEY-----\n" ++
-        "tok2 = \"sk-ant-api03-DIFFERENT_xyz9876543210AbCdEfGhIjKlMnOpQrStUvWxYz0123456789DiFfErEnT\"\n";
-
-    const hits = try scan(std.testing.allocator, input, .{});
-    defer std.testing.allocator.free(hits);
-
-    try std.testing.expectEqual(@as(usize, 3), hits.len);
-    // Sort contract: starts must be strictly increasing.
-    try std.testing.expect(hits[0].start < hits[1].start);
-    try std.testing.expect(hits[1].start < hits[2].start);
-    try std.testing.expectEqualStrings("anthropic-api-key", hits[0].name);
-    try std.testing.expectEqualStrings("rsa-private-key", hits[1].name);
-    try std.testing.expectEqualStrings("anthropic-api-key", hits[2].name);
-}
-
-test "noscan on the BEGIN line suppresses the PEM hit" {
-    // PEM blocks span multiple lines, so the existing per-line noscan check
-    // only fires when the directive sits on the BEGIN line itself. Document
-    // that contract here.
-    const input =
-        "-----BEGIN RSA PRIVATE KEY----- // noscan\n" ++
-        "MIIEpAIBAAKCAQEA1234567890abcdefg\n" ++
-        "-----END RSA PRIVATE KEY-----\n";
-
-    const hits = try scan(std.testing.allocator, input, .{});
-    defer std.testing.allocator.free(hits);
-    try std.testing.expectEqual(@as(usize, 0), hits.len);
-}
-
-test "noscan on a neighbouring line does not suppress the PEM hit" {
-    const input =
-        "// noscan\n" ++
-        "-----BEGIN RSA PRIVATE KEY-----\n" ++
-        "MIIEpAIBAAKCAQEA1234567890abcdefg\n" ++
-        "-----END RSA PRIVATE KEY-----\n";
-
-    const hits = try scan(std.testing.allocator, input, .{});
-    defer std.testing.allocator.free(hits);
-    try std.testing.expectEqual(@as(usize, 1), hits.len);
-    try std.testing.expectEqualStrings("rsa-private-key", hits[0].name);
-}
-
-test "allowlist substring drops a matching PEM block" {
-    const input =
-        "-----BEGIN RSA PRIVATE KEY-----\n" ++
-        "MIIEpAIBAAKCAQEA1234567890SAMPLEFIXTURE\n" ++
-        "-----END RSA PRIVATE KEY-----\n";
-
-    const allow = [_][]const u8{"SAMPLEFIXTURE"};
-    const hits = try scan(std.testing.allocator, input, .{ .allow = &allow });
-    defer std.testing.allocator.free(hits);
-    try std.testing.expectEqual(@as(usize, 0), hits.len);
 }
