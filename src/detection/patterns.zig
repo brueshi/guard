@@ -46,6 +46,16 @@ pub const registry = [_]Pattern{
     .{ .name = "npm-token",              .prefixes = &.{"npm_"},                                      .charset = .base62,    .min_len = 30,  .max_len = 50  },
     .{ .name = "linear-api-key",         .prefixes = &.{"lin_api_"},                                  .charset = .base62,    .min_len = 40,  .max_len = 60  },
     .{ .name = "figma-token",            .prefixes = &.{"figd_"},                                     .charset = .base64url, .min_len = 38,  .max_len = 70  },
+    .{ .name = "postman-api-key",        .prefixes = &.{"PMAK-"},                                     .charset = .base64url, .min_len = 40,  .max_len = 80  },
+    .{ .name = "postman-collection-token", .prefixes = &.{"PMAT-"},                                   .charset = .base64url, .min_len = 40,  .max_len = 80  },
+    .{ .name = "sentry-auth-token",      .prefixes = &.{"sntrys_"},                                   .charset = .base62,    .min_len = 70,  .max_len = 80  },
+    .{ .name = "sentry-user-token",      .prefixes = &.{"sntryu_"},                                   .charset = .base62,    .min_len = 70,  .max_len = 80  },
+    .{ .name = "sentry-oauth-token",     .prefixes = &.{"sntryo_"},                                   .charset = .base62,    .min_len = 70,  .max_len = 80  },
+    .{ .name = "brave-api-key",          .prefixes = &.{"BSAI"},                                      .charset = .base64url, .min_len = 24,  .max_len = 50  },
+    .{ .name = "tavily-api-key",         .prefixes = &.{"tvly-"},                                     .charset = .base64url, .min_len = 30,  .max_len = 45  },
+    .{ .name = "heroku-api-key",         .prefixes = &.{"HRKU-"},                                     .charset = .base62,    .min_len = 32,  .max_len = 50  },
+    .{ .name = "openai-service-account", .prefixes = &.{"sk-svcacct-"},                               .charset = .base64url, .min_len = 50,  .max_len = 200 },
+    .{ .name = "atlassian-api-token",    .prefixes = &.{"ATATT"},                                     .charset = .base64url, .min_len = 190, .max_len = 250 },
     .{ .name = "jwt",                    .prefixes = &.{"eyJ"},                                       .charset = .base64url_dot, .min_len = 100, .max_len = 5000, .min_dots = 2 },
 };
 
@@ -118,4 +128,65 @@ test "jwt with three segments matches" {
 test "eyJ without enough dots does not match jwt" {
     const input = "eyJabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcdefghijklmnopqrstuvwxyz0123456789";
     try std.testing.expect(matchAt(input, 0) == null);
+}
+
+test "postman api key matches" {
+    const input = "PMAK-1234567890abcdefghijklmnopqrstuvwxyz1234567890ABCDEF";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("postman-api-key", m.name());
+}
+
+test "postman collection token matches" {
+    const input = "PMAT-1234567890abcdefghijklmnopqrstuvwxyz1234567890ABCDEF";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("postman-collection-token", m.name());
+}
+
+test "sentry auth token matches" {
+    const input = "sntrys_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("sentry-auth-token", m.name());
+}
+
+test "sentry user token matches" {
+    const input = "sntryu_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("sentry-user-token", m.name());
+}
+
+test "sentry oauth token matches" {
+    const input = "sntryo_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("sentry-oauth-token", m.name());
+}
+
+test "brave api key matches" {
+    const input = "BSAI1234567890abcdefghijklmnopqrstuvwxyz";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("brave-api-key", m.name());
+}
+
+test "tavily api key matches" {
+    const input = "tvly-1234567890ABCDEFabcdefghijKLMNO";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("tavily-api-key", m.name());
+}
+
+test "heroku api key matches" {
+    const input = "HRKU-1234567890abcdefghijklmnopqrstuvwx";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("heroku-api-key", m.name());
+}
+
+test "openai service account matches" {
+    const input = "sk-svcacct-1234567890abcdefghijklmnopqrstuvwxyz_-ABCDEFGHIJKLMNOPQRSTUV";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("openai-service-account", m.name());
+}
+
+test "atlassian api token matches" {
+    // Atlassian tokens are typically 192+ chars after the ATATT prefix
+    const input = "ATATT3xFfGF0" ++ ("a" ** 200);
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("atlassian-api-token", m.name());
 }
