@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Cross-compile all targets
+        run: ./scripts/release.sh
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/guard-aarch64-macos.tar.gz \
+            dist/guard-x86_64-macos.tar.gz \
+            dist/guard-x86_64-linux.tar.gz \
+            dist/guard-aarch64-linux.tar.gz \
+            dist/checksums.txt \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

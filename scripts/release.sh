@@ -23,7 +23,17 @@ for target in $TARGETS; do
 
     archive="guard-$target.tar.gz"
     tar -C zig-out/bin -czf "$DIST/$archive" guard
-    (cd "$DIST" && shasum -a 256 "$archive" >> "checksums.txt")
+    (
+        cd "$DIST"
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" >> "checksums.txt"
+        elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$archive" >> "checksums.txt"
+        else
+            echo "release.sh: no sha256 tool found (need sha256sum or shasum)" >&2
+            exit 1
+        fi
+    )
     echo "    $DIST/$archive"
 done
 
