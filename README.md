@@ -16,6 +16,25 @@ Installs to `$HOME/.local/bin/guard` by default. Override with `GUARD_INSTALL_DI
 
 Pre-built binaries available for `aarch64-macos`, `x86_64-macos`, `x86_64-linux`, and `aarch64-linux`. SHA-256 checksums published with each release.
 
+### Use as a Claude Code skill
+
+Install the `/guard` slash command so Claude Code can run guard on your behalf — over a file, the clipboard, or `git diff --staged` (handy as a pre-commit check):
+
+```bash
+mkdir -p ~/.claude/skills/guard && \
+  curl -fsSL https://raw.githubusercontent.com/brueshi/guard/main/skills/guard/SKILL.md \
+  -o ~/.claude/skills/guard/SKILL.md
+```
+
+Then in Claude Code:
+
+| Invocation | What runs |
+|---|---|
+| `/guard` | `pbpaste \| guard --summary \| pbcopy` (clipboard in, redacted clipboard out) |
+| `/guard <path>` | `cat <path> \| guard --summary` |
+| `/guard diff` | `git diff --staged \| guard --summary` (pre-commit scan) |
+| `/guard <text>` | scan literal text |
+
 ## Usage
 
 ```bash
