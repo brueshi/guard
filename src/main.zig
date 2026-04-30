@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("detection/engine.zig");
 const entropy = @import("detection/entropy.zig");
+const installer = @import("hook/installer.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -10,6 +11,14 @@ const usage =
     \\
     \\usage:
     \\  guard [redact] [flags]      read stdin, write redacted stdout
+    \\  guard install-hook          install a git pre-commit hook in the current repo
+    \\
+    \\subcommands:
+    \\  redact                      (default) scan stdin and write redacted stdout
+    \\  install-hook                write .git/hooks/pre-commit; the hook pipes the
+    \\                              staged diff through `guard --summary` and blocks
+    \\                              the commit if guard detects secrets (exit 1).
+    \\                              bypass with `git commit --no-verify`.
     \\
     \\flags:
     \\  --summary                   write human report to stderr
@@ -136,6 +145,33 @@ pub fn main(init: std.process.Init) !void {
     const serr = &stderr_writer.interface;
 
     var arg_it = init.minimal.args.iterate();
+
+    // Peek the first positional after argv[0] to detect subcommands.
+    // The redact pipeline is the default, so anything we don't claim falls
+    // through to parseArgs (which already accepts an optional `redact` arg).
+    {
+        var peek_it = init.minimal.args.iterate();
+        _ = peek_it.next(); // argv[0]
+        if (peek_it.next()) |first| {
+            if (std.mem.eql(u8, first, "install-hook")) {
+                installer.install(allocator, io) catch |err| switch (err) {
+                    error.NotAGitRepo => {
+                        try serr.writeAll("error: not inside a git repository (run `git init` first)\n");
+                        try serr.flush();
+                        std.process.exit(2);
+                    },
+                    error.GitInvocationFailed => {
+                        try serr.writeAll("error: failed to invoke `git rev-parse --git-dir` (is git installed?)\n");
+                        try serr.flush();
+                        std.process.exit(2);
+                    },
+                    else => |e| return e,
+                };
+                return;
+            }
+        }
+    }
+
     const args = parseArgs(allocator, &arg_it) catch |err| switch (err) {
         error.HelpRequested => {
             try serr.writeAll(usage);
