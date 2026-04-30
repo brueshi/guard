@@ -15,7 +15,11 @@ const usage =
     \\  --summary                   write human report to stderr
     \\  --json                      write JSON report to stderr
     \\  --entropy-threshold <f>     override entropy cutoff (default 4.5)
+    \\  --allow <substring>         drop hits containing this substring (repeatable)
     \\  -h, --help                  show this help
+    \\
+    \\inline directives:
+    \\  any line containing "# noscan" or "// noscan" is skipped
     \\
     \\exit codes:
     \\  0  no secrets detected
@@ -29,12 +33,16 @@ const Mode = enum { plain, summary, json };
 const Args = struct {
     mode: Mode = .plain,
     threshold: f64 = entropy.default_threshold,
+    allow: []const []const u8 = &.{},
 };
 
-const ParseError = error{ HelpRequested, UnknownArg, MissingValue, InvalidNumber };
+const ParseError = error{ HelpRequested, UnknownArg, MissingValue, InvalidNumber, OutOfMemory };
 
-fn parseArgs(it: *std.process.Args.Iterator) ParseError!Args {
+fn parseArgs(allocator: Allocator, it: *std.process.Args.Iterator) ParseError!Args {
     var args = Args{};
+    var allow: std.ArrayList([]const u8) = .empty;
+    errdefer allow.deinit(allocator);
+
     _ = it.next(); // argv[0]
 
     while (it.next()) |a| {
@@ -46,12 +54,16 @@ fn parseArgs(it: *std.process.Args.Iterator) ParseError!Args {
         } else if (std.mem.eql(u8, a, "--entropy-threshold")) {
             const val = it.next() orelse return error.MissingValue;
             args.threshold = std.fmt.parseFloat(f64, val) catch return error.InvalidNumber;
+        } else if (std.mem.eql(u8, a, "--allow")) {
+            const val = it.next() orelse return error.MissingValue;
+            try allow.append(allocator, val);
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             return error.HelpRequested;
         } else {
             return error.UnknownArg;
         }
     }
+    args.allow = try allow.toOwnedSlice(allocator);
     return args;
 }
 
@@ -124,12 +136,13 @@ pub fn main(init: std.process.Init) !void {
     const serr = &stderr_writer.interface;
 
     var arg_it = init.minimal.args.iterate();
-    const args = parseArgs(&arg_it) catch |err| switch (err) {
+    const args = parseArgs(allocator, &arg_it) catch |err| switch (err) {
         error.HelpRequested => {
             try serr.writeAll(usage);
             try serr.flush();
             return;
         },
+        error.OutOfMemory => return error.OutOfMemory,
         error.UnknownArg, error.MissingValue, error.InvalidNumber => {
             try serr.writeAll("error: invalid arguments\n\n");
             try serr.writeAll(usage);
@@ -137,6 +150,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(2);
         },
     };
+    defer allocator.free(args.allow);
 
     var stdin_buf: [4096]u8 = undefined;
     var stdout_buf: [4096]u8 = undefined;
@@ -150,7 +164,10 @@ pub fn main(init: std.process.Init) !void {
     const input = try readAll(allocator, r);
     defer allocator.free(input);
 
-    const hits = try engine.scan(allocator, input, args.threshold);
+    const hits = try engine.scan(allocator, input, .{
+        .threshold = args.threshold,
+        .allow = args.allow,
+    });
     defer allocator.free(hits);
 
     var redactor = engine.Redactor.init(allocator);

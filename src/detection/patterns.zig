@@ -3,6 +3,7 @@ const std = @import("std");
 pub const Charset = enum {
     base62,
     base64url,
+    base64url_dot,
     hex_lower,
     base32,
 
@@ -10,6 +11,7 @@ pub const Charset = enum {
         return switch (c) {
             .base62 => std.ascii.isAlphanumeric(ch),
             .base64url => std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-',
+            .base64url_dot => std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-' or ch == '.',
             .hex_lower => (ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f'),
             .base32 => (ch >= 'A' and ch <= 'Z') or (ch >= '2' and ch <= '7'),
         };
@@ -22,6 +24,7 @@ pub const Pattern = struct {
     charset: Charset,
     min_len: usize,
     max_len: usize,
+    min_dots: u8 = 0,
 };
 
 pub const registry = [_]Pattern{
@@ -43,6 +46,7 @@ pub const registry = [_]Pattern{
     .{ .name = "npm-token",              .prefixes = &.{"npm_"},                                      .charset = .base62,    .min_len = 30,  .max_len = 50  },
     .{ .name = "linear-api-key",         .prefixes = &.{"lin_api_"},                                  .charset = .base62,    .min_len = 40,  .max_len = 60  },
     .{ .name = "figma-token",            .prefixes = &.{"figd_"},                                     .charset = .base64url, .min_len = 38,  .max_len = 70  },
+    .{ .name = "jwt",                    .prefixes = &.{"eyJ"},                                       .charset = .base64url_dot, .min_len = 100, .max_len = 5000, .min_dots = 2 },
 };
 
 pub const Match = struct {
@@ -62,10 +66,13 @@ pub fn matchAt(input: []const u8, pos: usize) ?Match {
                 std.mem.eql(u8, input[pos..][0..prefix.len], prefix))
             {
                 var end = pos + prefix.len;
-                while (end < input.len and pat.charset.contains(input[end])) : (end += 1) {}
+                var dots: u8 = 0;
+                while (end < input.len and pat.charset.contains(input[end])) : (end += 1) {
+                    if (input[end] == '.') dots +|= 1;
+                }
 
                 const total = end - pos;
-                if (total >= pat.min_len and total <= pat.max_len) {
+                if (total >= pat.min_len and total <= pat.max_len and dots >= pat.min_dots) {
                     return .{ .pattern_index = idx, .start = pos, .end = end };
                 }
             }
@@ -100,4 +107,15 @@ test "too short fails length check" {
 
 test "no match on plain text" {
     try std.testing.expect(matchAt("just normal text here", 0) == null);
+}
+
+test "jwt with three segments matches" {
+    const input = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const m = matchAt(input, 0) orelse return error.NoMatch;
+    try std.testing.expectEqualStrings("jwt", m.name());
+}
+
+test "eyJ without enough dots does not match jwt" {
+    const input = "eyJabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcdefghijklmnopqrstuvwxyz0123456789";
+    try std.testing.expect(matchAt(input, 0) == null);
 }
