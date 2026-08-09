@@ -39,6 +39,9 @@ pub const ScanOptions = struct {
     /// Emit hits for patterns that are public by design (Stripe
     /// publishable keys).
     include_publishable: bool = false,
+    /// Byte ranges to leave alone entirely — diff hunks belonging to
+    /// generated files. Sorted or not; membership is all that matters.
+    exclude: []const CoveredRange = &.{},
 };
 
 /// `KEY=value` is a single candidate span, because `=` is a candidate
@@ -119,6 +122,7 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     defer allocator.free(pem_spans);
     for (pem_spans) |s| {
         const value = input[s.start..s.end];
+        if (isCovered(opts.exclude, s.start)) continue;
         if (opts.skip_noscan and lineHasNoscan(input, s.start)) continue;
         if (isAllowed(value, opts.allow)) continue;
         try hits.append(allocator, .{
@@ -136,6 +140,7 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     defer allocator.free(uri_spans);
     for (uri_spans) |sp| {
         const value = input[sp.start..sp.end];
+        if (isCovered(opts.exclude, sp.start)) continue;
         if (opts.skip_noscan and lineHasNoscan(input, sp.start)) continue;
         if (isAllowed(value, opts.allow)) continue;
         try hits.append(allocator, .{
@@ -151,7 +156,7 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     // covered range (already claimed by a pre-pass).
     var cursor: usize = 0;
     while (entropy.nextCandidate(input, cursor)) |raw_span| {
-        if (isCovered(covered.items, raw_span.start)) {
+        if (isCovered(covered.items, raw_span.start) or isCovered(opts.exclude, raw_span.start)) {
             cursor = raw_span.end;
             continue;
         }

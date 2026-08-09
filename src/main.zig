@@ -1,6 +1,8 @@
 const std = @import("std");
 const engine = @import("detection/engine.zig");
 const entropy = @import("detection/entropy.zig");
+const diff = @import("detection/diff.zig");
+const config = @import("config.zig");
 const installer = @import("hook/installer.zig");
 
 // Zig only collects tests from files the root pulls in explicitly. Without
@@ -14,6 +16,8 @@ test {
     _ = @import("detection/suppress.zig");
     _ = @import("detection/pem.zig");
     _ = @import("detection/uri.zig");
+    _ = @import("detection/diff.zig");
+    _ = @import("config.zig");
     _ = @import("hook/installer.zig");
 }
 
@@ -43,10 +47,18 @@ const usage =
     \\                              credential context (more hits, more noise)
     \\  --include-publishable       report keys that are public by design
     \\                              (Stripe pk_live_/pk_test_)
+    \\  --no-path-filter            scan generated files in a diff instead of
+    \\                              skipping them
+    \\  --no-config                 ignore .guardignore
     \\  -h, --help                  show this help
     \\
     \\inline directives:
     \\  any line containing "# noscan" or "// noscan" is skipped
+    \\
+    \\.guardignore (nearest one from the cwd upward):
+    \\  pnpm-lock.yaml              glob of a path to skip in diff input
+    \\  **/generated/**
+    \\  allow:AKIAIOSFODNN7EXAMPLE  substring that drops a hit
     \\
     \\exit codes:
     \\  0  no secrets detected
@@ -63,6 +75,8 @@ const Args = struct {
     allow: []const []const u8 = &.{},
     strict: bool = false,
     include_publishable: bool = false,
+    path_filter: bool = true,
+    use_config: bool = true,
 };
 
 const ParseError = error{ HelpRequested, UnknownArg, MissingValue, InvalidNumber, OutOfMemory };
@@ -90,6 +104,10 @@ fn parseArgs(allocator: Allocator, it: *std.process.Args.Iterator) ParseError!Ar
             args.strict = true;
         } else if (std.mem.eql(u8, a, "--include-publishable")) {
             args.include_publishable = true;
+        } else if (std.mem.eql(u8, a, "--no-path-filter")) {
+            args.path_filter = false;
+        } else if (std.mem.eql(u8, a, "--no-config")) {
+            args.use_config = false;
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             return error.HelpRequested;
         } else {
@@ -224,11 +242,33 @@ pub fn main(init: std.process.Init) !void {
     const input = try readAll(allocator, r);
     defer allocator.free(input);
 
+    var cfg = if (args.use_config)
+        try config.load(allocator, io, .cwd())
+    else
+        config.Config{};
+    defer cfg.deinit(allocator);
+
+    // .guardignore allow: entries and repeated --allow flags are the same
+    // mechanism, so merge them into one list.
+    var allow: std.ArrayList([]const u8) = .empty;
+    defer allow.deinit(allocator);
+    try allow.appendSlice(allocator, args.allow);
+    try allow.appendSlice(allocator, cfg.allows.items);
+
+    // Generated files (lockfiles, bundles, build output) are pure noise. We
+    // can only attribute bytes to a path when the input is a diff.
+    const exclude: []const engine.CoveredRange = if (args.path_filter and diff.looksLikeDiff(input))
+        try diff.ignoredRanges(allocator, input, cfg)
+    else
+        &.{};
+    defer if (exclude.len > 0) allocator.free(exclude);
+
     const hits = try engine.scan(allocator, input, .{
         .threshold = args.threshold,
-        .allow = args.allow,
+        .allow = allow.items,
         .strict = args.strict,
         .include_publishable = args.include_publishable,
+        .exclude = exclude,
     });
     defer allocator.free(hits);
 
