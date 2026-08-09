@@ -25,6 +25,10 @@ pub const Pattern = struct {
     min_len: usize,
     max_len: usize,
     min_dots: u8 = 0,
+    /// The credential is designed to be shipped publicly (client-side
+    /// bundles, docs). Recognised so the entropy fallback does not report
+    /// it, but not redacted unless explicitly asked for.
+    publishable: bool = false,
 };
 
 pub const registry = [_]Pattern{
@@ -39,7 +43,7 @@ pub const registry = [_]Pattern{
     .{ .name = "aws-access-key",         .prefixes = &.{ "AKIA", "ASIA" },                            .charset = .base32,    .min_len = 20,  .max_len = 20  },
     .{ .name = "digitalocean-pat",       .prefixes = &.{"dop_v1_"},                                   .charset = .hex_lower, .min_len = 64,  .max_len = 80  },
     .{ .name = "stripe-secret-key",      .prefixes = &.{ "sk_live_", "sk_test_", "rk_live_", "rk_test_" }, .charset = .base62, .min_len = 28, .max_len = 200 },
-    .{ .name = "stripe-publishable-key", .prefixes = &.{ "pk_live_", "pk_test_" },                    .charset = .base62,    .min_len = 28,  .max_len = 200 },
+    .{ .name = "stripe-publishable-key", .prefixes = &.{ "pk_live_", "pk_test_" },                    .charset = .base62,    .min_len = 28,  .max_len = 200, .publishable = true },
     .{ .name = "stripe-webhook-secret",  .prefixes = &.{"whsec_"},                                    .charset = .base62,    .min_len = 38,  .max_len = 70  },
     .{ .name = "slack-token",            .prefixes = &.{ "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xapp-" }, .charset = .base64url, .min_len = 30, .max_len = 250 },
     .{ .name = "docker-hub-pat",         .prefixes = &.{"dckr_pat_"},                                 .charset = .base64url, .min_len = 30,  .max_len = 70  },

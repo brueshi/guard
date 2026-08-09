@@ -10,6 +10,8 @@ test {
     _ = @import("detection/engine.zig");
     _ = @import("detection/entropy.zig");
     _ = @import("detection/patterns.zig");
+    _ = @import("detection/context.zig");
+    _ = @import("detection/suppress.zig");
     _ = @import("detection/pem.zig");
     _ = @import("detection/uri.zig");
     _ = @import("hook/installer.zig");
@@ -37,6 +39,10 @@ const usage =
     \\  --json                      write JSON report to stderr
     \\  --entropy-threshold <f>     override entropy cutoff (default 4.5)
     \\  --allow <substring>         drop hits containing this substring (repeatable)
+    \\  --strict                    also report high-entropy strings that carry no
+    \\                              credential context (more hits, more noise)
+    \\  --include-publishable       report keys that are public by design
+    \\                              (Stripe pk_live_/pk_test_)
     \\  -h, --help                  show this help
     \\
     \\inline directives:
@@ -55,6 +61,8 @@ const Args = struct {
     mode: Mode = .plain,
     threshold: f64 = entropy.default_threshold,
     allow: []const []const u8 = &.{},
+    strict: bool = false,
+    include_publishable: bool = false,
 };
 
 const ParseError = error{ HelpRequested, UnknownArg, MissingValue, InvalidNumber, OutOfMemory };
@@ -78,6 +86,10 @@ fn parseArgs(allocator: Allocator, it: *std.process.Args.Iterator) ParseError!Ar
         } else if (std.mem.eql(u8, a, "--allow")) {
             const val = it.next() orelse return error.MissingValue;
             try allow.append(allocator, val);
+        } else if (std.mem.eql(u8, a, "--strict")) {
+            args.strict = true;
+        } else if (std.mem.eql(u8, a, "--include-publishable")) {
+            args.include_publishable = true;
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             return error.HelpRequested;
         } else {
@@ -215,6 +227,8 @@ pub fn main(init: std.process.Init) !void {
     const hits = try engine.scan(allocator, input, .{
         .threshold = args.threshold,
         .allow = args.allow,
+        .strict = args.strict,
+        .include_publishable = args.include_publishable,
     });
     defer allocator.free(hits);
 
