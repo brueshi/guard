@@ -3,6 +3,18 @@ const engine = @import("detection/engine.zig");
 const entropy = @import("detection/entropy.zig");
 const installer = @import("hook/installer.zig");
 
+// Zig only collects tests from files the root pulls in explicitly. Without
+// this block `zig build test` silently skipped every detection module and
+// reported success.
+test {
+    _ = @import("detection/engine.zig");
+    _ = @import("detection/entropy.zig");
+    _ = @import("detection/patterns.zig");
+    _ = @import("detection/pem.zig");
+    _ = @import("detection/uri.zig");
+    _ = @import("hook/installer.zig");
+}
+
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
