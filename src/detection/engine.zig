@@ -50,6 +50,23 @@ fn isAllowed(value: []const u8, allow: []const []const u8) bool {
     return false;
 }
 
+/// `KEY=value` is a single candidate span, because `=` is a candidate
+/// character. Narrow to the value so that provider prefixes line up with a
+/// span start (`API_KEY=sk-ant-...` otherwise never matches the Anthropic
+/// pattern at all) and so a redaction never swallows the variable name.
+///
+/// Base64 only ever uses `=` as trailing padding, so splitting on the last
+/// `=` that still has content after it cannot cut a credential in half.
+fn narrowToValue(input: []const u8, span: entropy.Span) entropy.Span {
+    var i = span.end;
+    while (i > span.start) : (i -= 1) {
+        if (input[i - 1] != '=') continue;
+        if (i < span.end) return .{ .start = i, .end = span.end };
+        return span;
+    }
+    return span;
+}
+
 pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     var hits: std.ArrayList(Hit) = .empty;
     errdefer hits.deinit(allocator);
@@ -94,11 +111,12 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
     // Token pass: walk every candidate token. Skip anything inside a
     // covered range (already claimed by a pre-pass).
     var cursor: usize = 0;
-    while (entropy.nextCandidate(input, cursor)) |span| {
-        if (isCovered(covered.items, span.start)) {
-            cursor = span.end;
+    while (entropy.nextCandidate(input, cursor)) |raw_span| {
+        if (isCovered(covered.items, raw_span.start)) {
+            cursor = raw_span.end;
             continue;
         }
+        const span = narrowToValue(input, raw_span);
         if (patterns.matchAt(input, span.start)) |m| {
             const value = input[m.start..m.end];
             if (!(opts.skip_noscan and lineHasNoscan(input, m.start)) and !isAllowed(value, opts.allow)) {
@@ -122,7 +140,7 @@ pub fn scan(allocator: Allocator, input: []const u8, opts: ScanOptions) ![]Hit {
                     });
                 }
             }
-            cursor = span.end;
+            cursor = raw_span.end;
         }
     }
 
@@ -244,6 +262,23 @@ test "redactor produces stable counter placeholders" {
     // The duplicate should reuse :1, not become :3
     try std.testing.expect(std.mem.count(u8, out, "[REDACTED:anthropic-api-key:1]") == 2);
     try std.testing.expect(std.mem.indexOf(u8, out, "[REDACTED:anthropic-api-key:3]") == null);
+}
+
+test "unquoted env assignment matches the provider pattern, not the whole line" {
+    // '=' and '-' are both candidate characters, so this is one span. Before
+    // narrowing, the prefix never lined up and the entropy fallback redacted
+    // the variable name along with the key.
+    const input = "ANTHROPIC_API_KEY=sk-ant-api03-aB3xQ9_kLm2nP5vR7wYzC8dFgHj1KlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOp\n";
+    const hits = try scan(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(hits);
+    try std.testing.expectEqual(@as(usize, 1), hits.len);
+    try std.testing.expectEqualStrings("anthropic-api-key", hits[0].name);
+
+    var r = Redactor.init(std.testing.allocator);
+    defer r.deinit();
+    const out = try r.redact(input, hits);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY=[REDACTED:anthropic-api-key:1]\n", out);
 }
 
 test "no secrets means input passes through unchanged" {
