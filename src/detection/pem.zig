@@ -176,7 +176,7 @@ test "clean RSA PEM block is detected" {
     try std.testing.expect(std.mem.startsWith(u8, input[spans[0].start..spans[0].end], "-----BEGIN RSA PRIVATE KEY-----"));
     try std.testing.expect(std.mem.endsWith(
         u8,
-        std.mem.trimRight(u8, input[spans[0].start..spans[0].end], "\r\n"),
+        std.mem.trimEnd(u8, input[spans[0].start..spans[0].end], "\r\n"),
         "-----END RSA PRIVATE KEY-----",
     ));
 }

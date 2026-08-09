@@ -121,7 +121,7 @@ test "install writes executable pre-commit hook into a fresh git repo" {
     const hook_rel = try std.fs.path.join(allocator, &.{ git_dir, "hooks", "pre-commit" });
     defer allocator.free(hook_rel);
 
-    const contents = try tmp.dir.readFileAlloc(t_io, allocator, hook_rel, .unlimited);
+    const contents = try tmp.dir.readFileAlloc(t_io, hook_rel, allocator, .unlimited);
     defer allocator.free(contents);
     try testing.expect(std.mem.indexOf(u8, contents, "guard --summary") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "git diff --staged") != null);
