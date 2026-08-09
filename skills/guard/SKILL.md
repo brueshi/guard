@@ -35,7 +35,14 @@ When the user is about to `git commit`, proactively suggest `/guard diff` first.
 1. Edit the staged files to remove the secrets, then re-stage and commit (recommended — secrets in git history are hard to scrub).
 2. Knowingly override and commit anyway.
 
-If guard catches a value the user knows is fine (a fixture, a documented example), suggest either adding `# noscan` / `// noscan` to the line, or passing `--allow <substring>` to the next invocation.
+If guard catches a value the user knows is fine (a fixture, a documented example), suggest, in order of preference:
+
+1. `allow:<substring>` in `.guardignore` — persists across runs and is shared with the repo.
+2. A path glob in `.guardignore`, if a whole generated file is the problem.
+3. `# noscan` / `// noscan` on the line, for a one-off.
+4. `--allow <substring>` for the current invocation only.
+
+A false positive is worth reporting upstream rather than working around silently — the suppression rules are built from measured cases.
 
 ## Output handling
 
@@ -54,6 +61,10 @@ Confirm with `which guard`. If `~/.local/bin` is not on PATH, advise the user to
 
 ## What `guard` detects
 
-19 provider patterns (Anthropic, OpenAI, Google, GCP, HuggingFace, GitHub classic + fine-grained, GitLab, AWS, DigitalOcean, Stripe live/test/webhook, Slack, Docker, npm, Linear, Figma, JWT) plus a Shannon-entropy fallback (≥4.5 bits/char, ≥20 chars) for unknown providers. Stable per-pattern counter placeholders so the same secret reuses its index within a run — no content hash, no cross-run linkability.
+29 provider patterns (Anthropic, OpenAI, Google, GCP, HuggingFace, GitHub classic + fine-grained, GitLab, AWS, DigitalOcean, Stripe secret/webhook, Slack, Docker, npm, Linear, Figma, Postman, Sentry, Brave, Tavily, Heroku, Atlassian, JWT) plus multi-line PEM private keys, passwords embedded in connection-string URIs, and a Shannon-entropy fallback (≥4.5 bits/char, ≥20 chars) for unknown providers. Stable per-pattern counter placeholders so the same secret reuses its index within a run — no content hash, no cross-run linkability.
+
+The entropy fallback only fires on tokens that sit in credential context — in value position, or on a line naming a credential. This is deliberate: it keeps identifier chains, resource paths, integrity digests and URLs quiet. If the user is scanning a bare blob with no surrounding code and wants maximum recall, add `--strict`.
+
+Guard skips generated files (lockfiles, minified bundles, source maps, build dirs) when the input is a diff. Whole-file scans are never path-filtered, so `cat pnpm-lock.yaml | guard` still scans everything.
 
 Source: https://github.com/brueshi/guard
